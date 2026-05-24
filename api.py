@@ -103,9 +103,9 @@ class RetroStresser:
         attacks = []
         remaining = total_time
         while remaining > 0:
-            if remaining >= 60:
-                attacks.append(60)
-                remaining -= 60
+            if remaining >= 30:
+                attacks.append(30)
+                remaining -= 30
             else:
                 attacks.append(remaining if remaining >= 30 else 30)
                 break
